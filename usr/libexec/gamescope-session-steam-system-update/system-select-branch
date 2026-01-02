@@ -1,0 +1,55 @@
+#!/bin/bash
+set -e
+
+BRANCH_PATH="/etc/gamescope-session-steam-system-update/source.conf"
+. "$BRANCH_PATH"
+
+# To correctly display the branches in steam, we need to use the SteamOS branched rel, rc and beta.
+
+if [[ $# -eq 1 ]]; then
+  case "$1" in
+    "-c")
+      case "$BRANCH" in
+        "rel")
+          echo "rel"
+          exit 0
+          ;;
+        "beta")
+          echo "beta"
+          exit 0
+          ;;
+        "rc")
+          echo "rc"
+          exit 0
+          ;;
+        *)
+          # This can happen on CI/dev builds or when downgrading from a newer build that knows of more branches.  The update
+          # path should decide how to handle it.
+          echo >&2 "Warning: Unrecognized currently selected branch name '$BRANCH', updates may not succeed."
+          echo "$BRANCH"
+          exit 0
+          ;;
+      esac
+      ;;
+    "-l")
+      echo rel
+      echo beta
+      echo rc
+      exit 0
+      ;;
+    "rel")
+      sed -i "s/^BRANCH=.*/BRANCH=rel/" "$BRANCH_PATH"
+      exit 0
+      ;;
+    "beta")
+      sed -i "s/^BRANCH=.*/BRANCH=beta/" "$BRANCH_PATH"
+      exit 0
+      ;;
+    "rc")
+      sed -i "s/^BRANCH=.*/BRANCH=rc/" "$BRANCH_PATH"
+      exit 0
+      ;;
+  esac
+fi
+
+echo "Usage: steamos-select-branch <-rel|beta|rc>" 1>&2

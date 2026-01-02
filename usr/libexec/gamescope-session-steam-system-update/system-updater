@@ -1,0 +1,303 @@
+#!/bin/bash
+set -euo pipefail
+
+BRANCH_PATH="/etc/gamescope-session-steam-system-update/source.conf"
+CONF_DIR="/usr/lib/gamescope-session-steam-system-update/"
+CUSTOM_CONF_DIR="/etc/gamescope-session-steam-system-update/"
+
+# Define the log file path
+log_file="/var/log/system-update.log"
+: >"$log_file"
+
+exec 3>&1                 # save current stdout (fd 3 → terminal)
+exec 1>>"$log_file"       # stdout  → log
+exec 2>&1                 # stderr  → same log
+
+# Function to monitor and estimate the progress
+monitor_progress() {
+    local total_pkgs=0
+    local preload_done=0
+    local retr_done=0
+    local inst_done=0
+    local cleanup_done=0
+    local last_percent=-1
+
+    # Script phase: count unique packages that run posttrans/trigger* scripts
+    declare -A seen_scripts=()
+    local scripts_done=0
+
+    # Regex patterns
+    local re_plan='\([[:space:]]*([0-9]+)[[:space:]]*/[[:space:]]*([0-9]+)[[:space:]]*\)'
+
+    local re_preload='^Preloading:[[:space:]].*\[(done|already in cache)\]'
+    local re_retr="^Retrieving:[[:space:]].*${re_plan}"
+
+    # Installing uses the (n/total) counter
+    local re_inst="^[[:space:]]*${re_plan}[[:space:]]+Installing:"
+
+    # Cleanup needs to count lines (because it stays (total/total))
+    local re_cleanup="^[[:space:]]*${re_plan}[[:space:]]+Cleaning up:"
+
+    # Script phase (10%): posttrans + triggerin + triggerpostun
+    local re_script_pkg="^[[:space:]]*${re_plan}[[:space:]]+Executing[[:space:]]+(posttrans|triggerin|triggerpostun)[[:space:]]+script[[:space:]]+for:[[:space:]]+([^[:space:]]+)"
+
+    # total parsing
+    local re_pkg_any='([0-9]+)[[:space:]]*(package(s)?)?[[:space:]]*to[[:space:]]+[A-Za-z-]+'
+
+    local started=0
+
+    while IFS= read -r line; do
+        if (( started == 0 )) && [[ "$line" =~ Options:\ .* ]]; then
+            started=1
+            continue
+        fi
+        (( started == 0 )) && continue
+
+        # Prefer to set total_pkgs early from the zypper summary line(s)
+        if (( total_pkgs == 0 )) && [[ "$line" == *" to "* ]]; then
+            local sum=0
+            local rest="$line"
+            while [[ "$rest" =~ $re_pkg_any ]]; do
+                sum=$(( sum + ${BASH_REMATCH[1]} ))
+                # Remove up to and including this match to find further matches
+                rest="${rest#*${BASH_REMATCH[0]}}"
+            done
+            if (( sum > 0 )); then
+                total_pkgs=$sum
+            fi
+        fi
+
+        # Fallback: Extract total_pkgs from any "(cur/total)" pattern if still unknown
+        if (( total_pkgs == 0 )) && [[ $line =~ $re_plan ]]; then
+            total_pkgs=${BASH_REMATCH[2]}
+        fi
+
+        # Count completed preloads ([done] or [already in cache])
+        if [[ $line =~ $re_preload ]]; then
+            ((preload_done += 1))
+        fi
+
+        # Count retrieving progress
+        if [[ $line =~ $re_retr ]]; then
+            retr_done=${BASH_REMATCH[1]}
+            # If total_pkgs was unknown, retr gives a reliable total
+            if (( total_pkgs == 0 )); then
+                total_pkgs=${BASH_REMATCH[2]}
+            fi
+        fi
+
+        # Count install progress (from (n/total))
+        if [[ $line =~ $re_inst ]]; then
+            inst_done=${BASH_REMATCH[1]}
+            if (( total_pkgs == 0 )); then
+                total_pkgs=${BASH_REMATCH[2]}
+            fi
+        fi
+
+        # Count cleanup progress by line (not by (n/total))
+        if [[ $line =~ $re_cleanup ]]; then
+            ((cleanup_done += 1))
+            if (( total_pkgs == 0 )); then
+                total_pkgs=${BASH_REMATCH[2]}
+            fi
+        fi
+
+        # Count unique script executions (cap at total_pkgs later)
+        if [[ $line =~ $re_script_pkg ]]; then
+            local pkg="${BASH_REMATCH[4]}"
+            if [[ -z "${seen_scripts[$pkg]+x}" ]]; then
+                seen_scripts["$pkg"]=1
+                ((scripts_done += 1))
+            fi
+        fi
+
+        if (( total_pkgs > 0 )); then
+            # Weight the phases:
+            # Preloading:  15%
+            # Retrieving:  35%
+            # Installing:  30%
+            # Cleaning up: 10%  (count cleanup lines)
+            # Scripts:     10%  (posttrans + triggerin + triggerpostun)
+
+            local preload_norm=$(( preload_done > total_pkgs ? total_pkgs : preload_done ))
+            local retr_norm=$(( retr_done > total_pkgs ? total_pkgs : retr_done ))
+            local inst_norm=$(( inst_done > total_pkgs ? total_pkgs : inst_done ))
+            local cleanup_norm=$(( cleanup_done > total_pkgs ? total_pkgs : cleanup_done ))
+            local scripts_norm=$(( scripts_done > total_pkgs ? total_pkgs : scripts_done ))
+
+            local preload_pct=$(( preload_norm * 15 / total_pkgs ))
+            local retr_pct=$(( retr_norm * 35 / total_pkgs ))
+            local inst_pct=$(( inst_norm * 30 / total_pkgs ))
+            local cleanup_pct=$(( cleanup_norm * 10 / total_pkgs ))
+            local scripts_pct=$(( scripts_norm * 10 / total_pkgs ))
+
+            local percent=$(( preload_pct + retr_pct + inst_pct + cleanup_pct + scripts_pct ))
+
+            # Cap at 99% until we see "Transaction completed."
+            if (( percent > 99 )); then
+                percent=99
+            fi
+
+            if (( percent != last_percent )); then
+                echo "${percent}%" >&3
+                last_percent=$percent
+            fi
+        fi
+
+        if [[ "$line" == *"Transaction completed."* ]]; then
+            echo "100%" >&3
+            break
+        fi
+    done < <(tail -s 0.5 -n 0 -F "$log_file")
+}
+
+
+run_update() {
+    echo "0%" >&3
+    # Run the transactional-update command and redirect output to the log file
+    transactional-update -c run zypper --non-interactive dup --allow-vendor-change &
+    pid=$!
+
+    # Start the monitor_progress function in the background
+    monitor_progress &
+    mon_pid=$!
+
+    # Wait for the transactional-update command to finish
+    if ! wait $pid; then
+        tu_status=$?
+    else
+        tu_status=0
+    fi
+
+    # Clean up monitoring
+    kill $mon_pid 2>/dev/null || true
+    # Kill the tail process
+    pkill -P $mon_pid 2>/dev/null || true
+    pkill -u root -f "tail -s 0.5 -n 0 -F $log_file" 2>/dev/null || true
+
+    # Ensure we show 100% on success
+    if [[ $tu_status -eq 0 || $tu_status -eq 10 ]]; then
+        echo "100%" >&3
+    fi
+
+    return $tu_status
+}
+
+check_update() {
+    zypper refresh || true
+    # Run zypper lu and count the number of update entries
+    update_count=$(zypper lu | tail -n +5 | grep -c ' | ' || true)
+
+    # Check the update count
+    if [ "$update_count" -eq 0 ]; then
+        echo "No updates available."
+        return 7
+    else
+        echo "Updates are available."
+        return 0
+    fi
+}
+
+check_branch() {
+    . "$BRANCH_PATH"
+
+    # Read previous branch (if present) from source.conf
+    local old_branch="${OLD_BRANCH:-}"
+
+    # If no old branch recorded yet, just record current and exit
+    if [[ -z "$old_branch" ]]; then
+        sed -i "s/^OLD_BRANCH=.*/OLD_BRANCH=${BRANCH}/" "$BRANCH_PATH" 2>/dev/null || true
+        grep -q '^OLD_BRANCH=' "$BRANCH_PATH" || echo "OLD_BRANCH=${BRANCH}" >> "$BRANCH_PATH"
+        return
+    fi
+
+    # No change
+    if [[ "$old_branch" == "$BRANCH" ]]; then
+        return
+    fi
+
+    # Map branch -> repo list file
+    local old_conf="${CONF_DIR}${old_branch}.conf"
+    local new_conf="${CONF_DIR}${BRANCH}.conf"
+    local custom_old_conf="${CUSTOM_CONF_DIR}${old_branch}.conf"
+    local custom_new_conf="${CUSTOM_CONF_DIR}${BRANCH}.conf"
+
+    [ -f "$custom_old_conf" ] && old_conf="$custom_old_conf"
+    [ -f "$custom_new_conf" ] && new_conf="$custom_new_conf"
+
+    # Remove repos from old branch (by name)
+    if [[ -f "$old_conf" ]]; then
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            local name
+            name="$(awk '{print $2}' <<<"$line")"
+            [[ -z "${name:-}" ]] && continue
+            echo "Removing repository ${name}..."
+            zypper --non-interactive rr "$name" || true
+        done < "$old_conf"
+    fi
+
+    # Add repos for new branch
+    if [[ -f "$new_conf" ]]; then
+        while IFS= read -r line; do
+            [[ -z "$line" ]] && continue
+            [[ "$line" =~ ^[[:space:]]*# ]] && continue
+            local url name
+            url="$(awk '{print $1}' <<<"$line")"
+            name="$(awk '{print $2}' <<<"$line")"
+            [[ -z "${url:-}" || -z "${name:-}" ]] && continue
+            echo "Adding repository ${name}..."
+            zypper --non-interactive ar -f -p 90 "$url" "$name"
+        done < "$new_conf"
+    else
+        echo "Branch repo list not found: $new_conf" >&2
+    fi
+
+    # Persist new OLD_BRANCH
+    sed -i "s/^OLD_BRANCH=.*/OLD_BRANCH=${BRANCH}/" "$BRANCH_PATH" 2>/dev/null || true
+    grep -q '^OLD_BRANCH=' "$BRANCH_PATH" || echo "OLD_BRANCH=${BRANCH}" >> "$BRANCH_PATH"
+}
+
+main() {
+    if [ $EUID -ne 0 ]; then
+        echo "$(basename $0) must be run as root"
+        exit 1
+    fi
+
+    CHECK_UPDATE=0
+
+    while (( "$#" )); do
+        case $1 in
+            --check)
+                CHECK_UPDATE=1
+                shift
+                ;;
+            -*|--*)
+                echo "Unknown argument $1"
+                exit 1
+                ;;
+        esac
+    done
+
+    check_branch
+
+    if [ $CHECK_UPDATE -eq 1 ]; then
+        check_update
+        exit_status=$?
+        exit $exit_status
+    fi
+
+    run_update
+    ret=$?
+
+    # If run_update failed with something other than "10" (nothing to do),
+    # propagate that failure back to Steam:
+    if [[ $ret -ne 0 && $ret -ne 10 ]]; then
+        exit $ret
+    fi
+}
+
+if [ "$0" = "$BASH_SOURCE" ] ; then
+    main "$@"
+fi
