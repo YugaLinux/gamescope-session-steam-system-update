@@ -1,0 +1,7 @@
+polkit.addRule(function(action, subject) {
+	if ((action.id == "org.gamescope-session-steam-system-update.run-steamos-update" ||
+	     action.id == "org.gamescope-session-steam-system-update.run-steamos-select-branch" &&
+	     subject.isInGroup("wheel")) {
+		return polkit.Result.YES;
+	}
+});
