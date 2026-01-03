@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-BRANCH_PATH="/etc/gamescope-session-steam-system-update/source.conf"
+BRANCH_PATH="/etc/gamescope-session-steam/source.conf"
 . "$BRANCH_PATH"
 
 # To correctly display the branches in steam, we need to use the SteamOS branched rel, rc and beta.

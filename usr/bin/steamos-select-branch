@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 
 # Hook for custom OS branch script
-STEAMOS_BRANCH_SCRIPT="/usr/libexec/gamescope-session-steam-system-update/system-select-branch"
+STEAMOS_BRANCH_SCRIPT="/usr/libexec/gamescope-session-steam/system-select-branch"
 if [ -x $STEAMOS_BRANCH_SCRIPT ] ; then
 	# Call branch script from the OS
 	${STEAMOS_BRANCH_SCRIPT} $@

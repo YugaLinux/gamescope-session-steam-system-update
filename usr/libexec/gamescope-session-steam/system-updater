@@ -1,9 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-BRANCH_PATH="/etc/gamescope-session-steam-system-update/source.conf"
-CONF_DIR="/usr/lib/gamescope-session-steam-system-update/"
-CUSTOM_CONF_DIR="/etc/gamescope-session-steam-system-update/"
+BRANCH_PATH="/etc/gamescope-session-steam/source.conf"
+CONF_DIR="/usr/lib/gamescope-session-steam/"
+CUSTOM_CONF_DIR="/etc/gamescope-session-steam/"
 
 # Define the log file path
 log_file="/var/log/system-update.log"
