@@ -2,6 +2,10 @@
 
 set -eu
 
+if [ ! -x /usr/bin/steamos-update ]; then
+    exit 7 # tells Steam client there is no update to perform
+fi
+
 if [[ $EUID -ne 0 ]];
 then
     exec pkexec --disable-internal-agent "$0" "$@"

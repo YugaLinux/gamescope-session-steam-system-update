@@ -6,6 +6,7 @@ if [ -x $STEAMOS_BRANCH_SCRIPT ] ; then
 	# Call branch script from the OS
 	${STEAMOS_BRANCH_SCRIPT} $@
 else
-	# Simply call shutdown on the client
+	# "rel" is the stable branch on SteamOS
 	echo "rel"
+	exit 0
 fi
