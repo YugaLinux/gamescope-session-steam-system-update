@@ -144,10 +144,10 @@ monitor_progress() {
             fi
         fi
 
-        if [[ "$line" == *"Transaction completed."* ]]; then
-            echo "100%" >&3
+        if [[ "$line" == *"transactional-update finished"* ]]; then
             break
         fi
+
     done < <(tail -s 0.5 -n 0 -F "$log_file")
 }
 
