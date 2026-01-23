@@ -14,4 +14,3 @@ then
 fi
 
 exec /usr/bin/steamos-select-branch "$@"
-

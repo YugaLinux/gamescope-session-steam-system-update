@@ -12,4 +12,3 @@ then
 fi
 
 exec /usr/bin/steamos-update "$@"
-
